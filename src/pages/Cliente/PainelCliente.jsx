@@ -1,127 +1,138 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "../../context/AuthContext";
 import { db } from "../../firebase";
-import { collection, query, where, getDocs, doc, deleteDoc } from "firebase/firestore";
+import { collection, getDocs, doc, deleteDoc } from "firebase/firestore";
 
 export default function PainelCliente() {
-  const { usuarioLogado } = useAuth();
-  const [agendamentos, setAgendamentos] = useState([]);
+  const [clientEmail] = useState("barber_sucesso@teste.com");
+  const [meusAgendamentos, setMeusAgendamentos] = useState([]);
+  const [barbeiros, setBarbeiros] = useState([]);
+  const [servicos, setServicos] = useState([]);
   const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState("");
 
-  // Função para buscar os agendamentos do banco de dados
-  const buscarAgendamentos = async () => {
-    if (!usuarioLogado) return;
-    
+  const carregarDadosCliente = async () => {
     try {
       setCarregando(true);
-      // Cria uma consulta filtrando apenas onde o clientId é igual ao ID do usuário logado
-      const q = query(
-        collection(db, "agendamentos"),
-        where("clientId", "==", usuarioLogado.uid)
-      );
 
-      const querySnapshot = await getDocs(q);
-      const listaAgendamentos = [];
-      
+      // 1. Carrega mapeamento de barbeiros
+      const qBarbeiros = await getDocs(collection(db, "profissionais"));
+      const bLista = [];
+      qBarbeiros.forEach(d => bLista.push({ id: d.id, ...d.data() }));
+      if (bLista.length === 0) {
+        bLista.push(
+          { id: "b9InIZOqbHXTYHL3VeTa", nome: "Alan (Cabelo & Barba)" },
+          { id: "barbeiro_2", nome: "Vitor (Especialista em Degradê)" }
+        );
+      }
+      setBarbeiros(bLista);
+
+      // 2. Carrega mapeamento de serviços
+      const qServicos = await getDocs(collection(db, "servicos"));
+      const sLista = [];
+      qServicos.forEach(d => sLista.push({ id: d.id, ...d.data() }));
+      if (sLista.length === 0) {
+        sLista.push(
+          { id: "servico_1", nome: "Corte Masculino", preco: 45.00 },
+          { id: "servico_2", nome: "Barba Completa", preco: 35.00 },
+          { id: "servico_3", nome: "Combo (Cabelo + Barba)", preco: 70.00 }
+        );
+      }
+      setServicos(sLista);
+
+      // 3. Carrega agendamentos e filtra pelo email logado
+      const querySnapshot = await getDocs(collection(db, "agendamentos"));
+      const lista = [];
       querySnapshot.forEach((documento) => {
-        listaAgendamentos.push({
-          id: documento.id,
-          ...documento.data()
-        });
+        const dados = documento.data();
+        if (dados.clientEmail === clientEmail) {
+          lista.push({ id: documento.id, ...dados });
+        }
       });
 
-      // Ordena por data mais recente (opcional, baseado na string do datetime-local)
-      listaAgendamentos.sort((a, b) => new Date(a.dataHorario) - new Date(b.dataHorario));
-
-      setAgendamentos(listaAgendamentos);
-    } catch (err) {
-      console.error("Erro ao buscar agendamentos:", err);
-      setErro("Não foi possível carregar seus agendamentos.");
+      setMeusAgendamentos(lista);
+    } catch (e) {
+      console.error("Erro ao carregar painel do cliente:", e);
     } finally {
       setCarregando(false);
     }
   };
 
   useEffect(() => {
-    buscarAgendamentos();
-  }, [usuarioLogado]);
+    carregarDadosCliente();
+  }, []);
 
-  // Função para cancelar (excluir) um agendamento
-  const handleCancelar = async (idDoAgendamento) => {
-    const confirmar = window.confirm("Tem certeza que deseja cancelar este horário?");
-    if (!confirmar) return;
-
+  const handleCancelarHorario = async (id) => {
+    if (!window.confirm("Deseja realmente cancelar este horário?")) return;
     try {
-      await deleteDoc(doc(db, "agendamentos", idDoAgendamento));
-      // Atualiza a tela removendo o item deletado da lista
-      setAgendamentos(agendamentos.filter(item => item.id !== idDoAgendamento));
-      alert("Horário cancelado com sucesso!");
-    } catch (err) {
-      console.error("Erro ao deletar:", err);
-      alert("Não foi possível cancelar o horário. Tente novamente.");
+      await deleteDoc(doc(db, "agendamentos", id));
+      setMeusAgendamentos(meusAgendamentos.filter(item => item.id !== id));
+      alert("Agendamento cancelado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao cancelar:", error);
     }
   };
 
-  // Função auxiliar para deixar o nome do barbeiro amigável na tela
-  const formatarBarbeiro = (id) => {
-    if (id === "barbeiro_1") return "Alan (Cabelo & Barba)";
-    if (id === "barbeiro_2") return "Vitor (Especialista em Degradê)";
-    return id;
+  const obterNomeBarbeiro = (id) => {
+    const encontrado = barbeiros.find(b => b.id === id);
+    return encontrado ? encontrado.nome : id;
   };
 
-  // Função para formatar a exibição da data (YYYY-MM-DDTHH:MM -> DD/MM/YYYY às HH:MM)
+  const obterNomeServico = (id) => {
+    const encontrado = servicos.find(s => s.id === id);
+    return encontrado ? encontrado.nome : "Serviço Selecionado";
+  };
+
   const formatarData = (dataString) => {
-    if (!dataString) return "";
-    const [data, hora] = dataString.split("T");
-    const [ano, mes, dia] = data.split("-");
-    return `${dia}/${mes}/${ano} às ${hora}`;
+    if (!dataString || typeof dataString !== "string") return dataString;
+    if (dataString.includes("T")) {
+      const [data, hora] = dataString.split("T");
+      const [ano, mes, dia] = data.split("-");
+      return `${dia}/${mes}/${ano} às ${hora}`;
+    }
+    return dataString;
   };
 
   return (
-    <div style={{ maxWidth: "600px", margin: "40px auto", padding: "20px", fontFamily: "sans-serif" }}>
-      <div style={{ textAlign: "center", marginBottom: "30px" }}>
-        <h2 style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", color: "#111" }}>
-          👤 Painel do Cliente
-        </h2>
-        <p style={{ color: "#555" }}>
-          Olá, <strong style={{ color: "#007bff" }}>{usuarioLogado?.email}</strong>. Gerencie seus horários abaixo:
-        </p>
-        <hr style={{ border: "0", borderTop: "1px solid #ddd", margin: "20px 0" }} />
-      </div>
-
-      <h3 style={{ textTransform: "uppercase", fontSize: "16px", color: "#666", letterSpacing: "1px", textAlign: "center", marginBottom: "20px" }}>
+    <div style={{ maxWidth: "700px", margin: "40px auto", padding: "20px", fontFamily: "sans-serif", textAlign: "center" }}>
+      <h2 style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "10px", color: "#111" }}>
+        👤 Painel do Cliente
+      </h2>
+      <p style={{ color: "#555" }}>Olá, <strong style={{ color: "#007bff" }}>{clientEmail}</strong>. Gerencie seus horários abaixo:</p>
+      
+      <hr style={{ border: "0", borderTop: "1px solid #eee", margin: "30px 0" }} />
+      
+      <h3 style={{ fontSize: "14px", color: "#777", letterSpacing: "1px", textTransform: "uppercase", marginBottom: "20px" }}>
         Meus Agendamentos
       </h3>
 
-      {erro && <p style={{ color: "red", textAlign: "center" }}>{erro}</p>}
-
       {carregando ? (
-        <p style={{ textAlign: "center", color: "#999" }}>Carregando seus horários...</p>
-      ) : agendamentos.length === 0 ? (
-        <p style={{ textAlign: "center", color: "#999", backgroundColor: "#f9f9f9", padding: "20px", borderRadius: "8px", border: "1px dashed #ccc" }}>
-          Você ainda não possui nenhum horário agendado.
-        </p>
+        <p style={{ color: "#999" }}>A carregar os seus agendamentos...</p>
+      ) : meusAgendamentos.length === 0 ? (
+        <p style={{ color: "#999", padding: "20px", border: "1px dashed #ccc", borderRadius: "8px" }}>Você não possui horários agendados.</p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
-          {agendamentos.map((agendamento) => (
-            <div key={agendamento.id} style={{ padding: "20px", backgroundColor: "#fff", borderRadius: "8px", boxShadow: "0 2px 8px rgba(0,0,0,0.05)", border: "1px solid #eee", display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
-              <p style={{ margin: "0", color: "#444" }}>
-                <strong>Profissional:</strong> {formatarBarbeiro(agendamento.barbeiroId)}
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {meusAgendamentos.map((item) => (
+            <div key={item.id} style={{ backgroundColor: "#fff", padding: "25px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", border: "1px solid #eee" }}>
+              <p style={{ margin: "5px 0", fontSize: "15px" }}>
+                <strong>Profissional:</strong> {obterNomeBarbeiro(item.barbeiroId)}
               </p>
-              <p style={{ margin: "0", color: "#444" }}>
-                <strong>Data/Hora:</strong> {formatarData(agendamento.dataHorario)}
+              <p style={{ margin: "5px 0", fontSize: "15px" }}>
+                <strong>Serviço:</strong> <span style={{ backgroundColor: "#f1f1f1", padding: "2px 6px", borderRadius: "4px", fontWeight: "600" }}>{obterNomeServico(item.servicoId)}</span>
               </p>
-              <p style={{ margin: "0", color: "#444" }}>
-                <strong>Status:</strong> <span style={{ color: "green", fontWeight: "bold" }}>CONFIRMADO</span>
+              <p style={{ margin: "5px 0", fontSize: "15px" }}>
+                <strong>Data/Hora:</strong> {formatarData(item.dataHorario)}
+              </p>
+              <p style={{ margin: "10px 0", fontSize: "14px" }}>
+                <strong>Status:</strong>{" "}
+                <span style={{ color: item.status === "concluido" ? "#28a745" : "#007bff", fontWeight: "bold" }}>
+                  {item.status ? item.status.toUpperCase() : "CONFIRMADO"}
+                </span>
               </p>
               
-              <button 
-                onClick={() => handleCancelar(agendamento.id)}
-                style={{ alignSelf: "flex-start", marginTop: "5px", padding: "6px 12px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "4px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" }}
-              >
-                Cancelar Horário
-              </button>
+              {item.status !== "concluido" && (
+                <button onClick={() => handleCancelarHorario(item.id)} style={{ marginTop: "10px", padding: "8px 16px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontWeight: "bold", fontSize: "13px" }}>
+                  Cancelar Horário
+                </button>
+              )}
             </div>
           ))}
         </div>
