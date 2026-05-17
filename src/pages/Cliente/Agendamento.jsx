@@ -1,181 +1,106 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { db } from "../../firebase";
-import { collection, getDocs, addDoc, query, where } from "firebase/firestore"; // <-- Adicionado: query e where
+import { useState } from "react";
+import { useAuth } from "../../context/AuthContext"; // Puxa o contexto de login
+import { db } from "../../firebase"; // Conexão com o banco de dados
+import { collection, addDoc, query, where, getDocs } from "firebase/firestore";
 
 export default function Agendamento() {
-  const navigate = useNavigate();
+  const { usuarioLogado } = useAuth(); // Pegando o usuário em tempo real
 
-  // Estados do Banco
-  const [barbeiros, setBarbeiros] = useState([]);
-  const [servicos, setServicos] = useState([]);
+  // Estados dos campos do formulário (repare que não precisamos mais do estado de nome do cliente)
+  const [barbeiroId, setBarbeiroId] = useState("");
+  const [dataHorario, setDataHorario] = useState("");
+  const [erro, setErro] = useState("");
+  const [sucesso, setSucesso] = useState("");
 
-  // Estados do Formulário
-  const [servicoIdSelecionado, setServicoIdSelecionado] = useState("");
-  const [barbeiroSelecionado, setBarbeiroSelecionado] = useState("");
-  const [dataHora, setDataHora] = useState("");
-  const [nomeCliente, setNomeCliente] = useState("");
-  const [carregando, setCarregando] = useState(false);
-
-  useEffect(() => {
-    const buscarDadosDoBanco = async () => {
-      try {
-        const profSnapshot = await getDocs(collection(db, "profissionais"));
-        const listaProf = profSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setBarbeiros(listaProf);
-        if (listaProf.length > 0) setBarbeiroSelecionado(listaProf[0].id);
-
-        const servSnapshot = await getDocs(collection(db, "servicos"));
-        const listaServ = servSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setServicos(listaServ);
-        if (listaServ.length > 0) setServicoIdSelecionado(listaServ[0].id);
-      } catch (error) {
-        console.error("Erro ao buscar dados:", error);
-      }
-    };
-    buscarDadosDoBanco();
-  }, []);
-
-  const salvarAgendamento = async (e) => {
+  const handleAgendar = async (e) => {
     e.preventDefault();
+    setErro("");
+    setSucesso("");
 
-    if (!nomeCliente || !dataHora || !barbeiroSelecionado || !servicoIdSelecionado) {
-      alert("Por favor, preencha todos os campos do agendamento!");
+    if (!barbeiroId || !dataHorario) {
+      setErro("Por favor, preencha todos os campos!");
       return;
     }
-
-    const horarioEscolhido = new Date(dataHora);
-    const agora = new Date();
-    if (horarioEscolhido < agora) {
-      alert("🕒 Opa! Você não pode escolher uma data ou horário que já passou.");
-      return;
-    }
-
-    setCarregando(true);
 
     try {
-      // 🛡️ REGRA DE NEGÓCIO: Validar se o barbeiro já tem cliente nesse exato minuto
-      const agendamentosRef = collection(db, "agendamentos");
-      
-      // Criamos uma consulta buscando por: mesmo barbeiro, mesmo horário e que NÃO esteja cancelado
-      const consultaConflito = query(
-        agendamentosRef,
-        where("barbeiroId", "==", barbeiroSelecionado),
-        where("dataHorario", "==", horarioEscolhido),
-        where("status", "==", "confirmado")
+      // 1. Regra de Negócio: Validação de Horário Duplicado no Firestore
+      const q = query(
+        collection(db, "agendamentos"),
+        where("barbeiroId", "==", barbeiroId),
+        where("dataHorario", "==", dataHorario)
       );
 
-      const snapshotConflito = await getDocs(consultaConflito);
+      const querySnapshot = await getDocs(q);
 
-      // Se encontrou qualquer registro, barramos o agendamento!
-      if (!snapshotConflito.empty) {
-        alert("❌ Este profissional já possui um agendamento confirmado para este dia e horário. Por favor, escolha outro horário!");
-        setCarregando(false);
+      if (!querySnapshot.empty) {
+        setErro("Este profissional já possui um agendamento neste horário.");
         return;
       }
 
-      // Se passou pela validação, prossegue normalmente
-      const dadosDoServico = servicos.find(s => s.id === servicoIdSelecionado);
-
+      // 2. Salvando o Agendamento com os dados dinâmicos do Usuário Logado
       await addDoc(collection(db, "agendamentos"), {
-        clienteId: nomeCliente,
-        barbeiroId: barbeiroSelecionado,
-        servicoId: servicoIdSelecionado,
-        servicoNome: dadosDoServico?.nome || "Serviço Não Identificado",
-        preco: Number(dadosDoServico?.preco) || 0,
-        duracao: Number(dadosDoServico?.duracao) || 30,
-        dataHorario: horarioEscolhido,
-        status: "confirmado"
+        clientId: usuarioLogado.uid, // Armazena o ID real do Firebase Auth
+        clientEmail: usuarioLogado.email, // Salva o e-mail para identificação rápida
+        barbeiroId,
+        dataHorario,
+        createdAt: new Date(),
       });
 
-      alert("🎉 Agendamento realizado com sucesso!");
-      navigate("/meus-agendamentos");
-
-    } catch (error) {
-      console.error("Erro ao gravar agendamento:", error);
-      alert("Houve um erro de comunicação com o banco de dados.");
-    } finally {
-      setCarregando(false);
+      setSucesso("🎉 Agendamento realizado com sucesso!");
+      setBarbeiroId("");
+      setDataHorario("");
+    } catch (err) {
+      console.error("Erro ao salvar agendamento:", err);
+      setErro("Ocorreu um erro ao salvar o agendamento. Tente novamente.");
     }
   };
 
   return (
-    <div style={{ maxWidth: "500px", margin: "50px auto", padding: "20px", fontFamily: "sans-serif", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 4px 15px rgba(0,0,0,0.1)" }}>
-      <div style={{ textAlign: "center", marginBottom: "25px" }}>
-        <span style={{ fontSize: "40px" }}>💈</span>
-        <h2 style={{ margin: "10px 0 5px 0", color: "#111" }}>Barbearia Premium</h2>
-        <p style={{ margin: 0, color: "#666", fontSize: "14px" }}>Agende seu Horário Conectado ao Firebase</p>
-      </div>
+    <div style={{ maxWidth: "500px", margin: "60px auto", padding: "30px", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 4px 15px rgba(0,0,0,0.1)", fontFamily: "sans-serif" }}>
+      <h2 style={{ textAlign: "center", marginBottom: "20px", color: "#111" }}>Agende seu Horário</h2>
 
-      <form onSubmit={salvarAgendamento} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <span style={{ fontWeight: "bold", color: "#333", fontSize: "14px" }}>ID ou Nome do Cliente:</span>
+      {/* Feedbacks de Erro e Sucesso com os padrões de design do sumário */}
+      {erro && <p style={{ color: "red", backgroundColor: "#fde8e8", padding: "10px", borderRadius: "6px", fontSize: "14px", fontWeight: "bold" }}>{erro}</p>}
+      {sucesso && <p style={{ color: "green", backgroundColor: "#e6f4ea", padding: "10px", borderRadius: "6px", fontSize: "14px", fontWeight: "bold" }}>{sucesso}</p>}
+
+      <form onSubmit={handleAgendar} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+        
+        {/* Campo do Cliente desabilitado (Apenas visual, mostrando quem está logado) */}
+        <label style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+          <span style={{ fontWeight: "bold", fontSize: "14px" }}>Cliente Ativo:</span>
           <input 
-            type="text"
-            placeholder="Digite seu nome completo"
-            value={nomeCliente}
-            onChange={(e) => setNomeCliente(e.target.value)}
-            style={{ padding: "12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "15px" }}
+            type="text" 
+            value={usuarioLogado ? usuarioLogado.email : "Carregando..."} 
+            disabled 
+            style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc", backgroundColor: "#f5f5f5", cursor: "not-allowed", color: "#666" }} 
           />
         </label>
 
-        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <span style={{ fontWeight: "bold", color: "#333", fontSize: "14px" }}>Escolha o Serviço:</span>
+        <label style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+          <span style={{ fontWeight: "bold", fontSize: "14px" }}>Escolha o Profissional:</span>
           <select 
-            value={servicoIdSelecionado}
-            onChange={(e) => setServicoIdSelecionado(e.target.value)}
-            style={{ padding: "12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "15px", backgroundColor: "#fff" }}
+            value={barbeiroId} 
+            onChange={(e) => setBarbeiroId(e.target.value)} 
+            style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }}
           >
-            {servicos.length === 0 ? (
-              <option>Carregando serviços...</option>
-            ) : (
-              servicos.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.nome} — R$ {s.preco} ({s.duracao} min)
-                </option>
-              ))
-            )}
+            <option value="">Selecione um barbeiro...</option>
+            <option value="barbeiro_1">Alan (Cabelo & Barba)</option>
+            <option value="barbeiro_2">Vitor (Especialista em Degradê)</option>
           </select>
         </label>
 
-        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <span style={{ fontWeight: "bold", color: "#333", fontSize: "14px" }}>Escolha o Profissional:</span>
-          <select 
-            value={barbeiroSelecionado}
-            onChange={(e) => setBarbeiroSelecionado(e.target.value)}
-            style={{ padding: "12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "15px", backgroundColor: "#fff" }}
-          >
-            {barbeiros.map(b => (
-              <option key={b.id} value={b.id}>{b.nome || "Barbeiro sem Nome"}</option>
-            ))}
-          </select>
-        </label>
-
-        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <span style={{ fontWeight: "bold", color: "#333", fontSize: "14px" }}>Data e Horário:</span>
+        <label style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+          <span style={{ fontWeight: "bold", fontSize: "14px" }}>Data e Horário:</span>
           <input 
-            type="datetime-local"
-            value={dataHora}
-            onChange={(e) => setDataHora(e.target.value)}
-            style={{ padding: "12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "15px" }}
+            type="datetime-local" 
+            value={dataHorario} 
+            onChange={(e) => setDataHorario(e.target.value)} 
+            style={{ padding: "10px", borderRadius: "6px", border: "1px solid #ccc" }} 
           />
         </label>
 
-        <button
-          type="submit"
-          disabled={carregando}
-          style={{
-            padding: "14px",
-            backgroundColor: "#007bff",
-            color: "#fff",
-            border: "none",
-            borderRadius: "6px",
-            fontSize: "16px",
-            fontWeight: "bold",
-            cursor: "pointer"
-          }}
-        >
-          {carregando ? "Verificando Agenda..." : "Confirmar Agendamento"}
+        <button type="submit" style={{ padding: "12px", backgroundColor: "#111", color: "#fff", border: "none", borderRadius: "6px", fontWeight: "bold", cursor: "pointer", marginTop: "10px" }}>
+          Confirmar Agendamento
         </button>
       </form>
     </div>

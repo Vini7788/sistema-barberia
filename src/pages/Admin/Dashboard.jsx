@@ -1,165 +1,267 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { db } from "../../firebase";
-import { collection, getDocs, doc, updateDoc } from "firebase/firestore";
+import { collection, getDocs, doc, deleteDoc, updateDoc } from "firebase/firestore";
 
 export default function Dashboard() {
   const [agendamentos, setAgendamentos] = useState([]);
-  const [faturamentoTotal, setFaturamentoTotal] = useState(0);
-  const [totalCortesAtivos, setTotalCortesAtivos] = useState(0);
-  const [totalCancelados, setTotalCancelados] = useState(0);
   const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [mesFaturamento, setMesFaturamento] = useState("Maio");
 
-  const carregarDadosDash = async () => {
+  // Preço padrão por corte para o cálculo de caixa
+  const PRECO_CORTE = 45.00; 
+
+  const buscarTodosAgendamentos = async () => {
     try {
+      setCarregando(true);
+      setErro("");
       const querySnapshot = await getDocs(collection(db, "agendamentos"));
-      const lista = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-
-      // Ordenar para mostrar os mais recentes primeiro na tabela
-      lista.sort((a, b) => b.dataHorario?.seconds - a.dataHorario?.seconds);
-      setAgendamentos(lista);
-
-      // 📊 METRICAS ATUALIZADAS:
-      let faturamento = 0;
-      let ativos = 0;
-      let cancelados = 0;
-
-      lista.forEach((agend) => {
-        if (agend.status === "concluido") {
-          // O dinheiro só entra no caixa se o serviço foi CONCLUÍDO
-          faturamento += Number(agend.preco || 0);
-        } else if (agend.status === "confirmado") {
-          // Se está confirmado, é um cliente que ainda vai aparecer na barbearia
-          ativos++;
-        } else if (agend.status === "cancelado") {
-          cancelados++;
-        }
+      const lista = [];
+      
+      querySnapshot.forEach((documento) => {
+        lista.push({
+          id: documento.id,
+          ...documento.data()
+        });
       });
 
-      setFaturamentoTotal(faturamento);
-      setTotalCortesAtivos(ativos);
-      setTotalCancelados(cancelados);
+      lista.sort((a, b) => {
+        if (!a.dataHorario || typeof a.dataHorario !== "string") return 1;
+        if (!b.dataHorario || typeof b.dataHorario !== "string") return -1;
+        return new Date(a.dataHorario) - new Date(b.dataHorario);
+      });
 
+      setAgendamentos(lista);
     } catch (error) {
-      console.error("Erro ao processar métricas do dashboard:", error);
+      console.error("Erro detalhado no Dashboard:", error);
+      setErro("Não foi possível carregar os dados do Firebase.");
     } finally {
       setCarregando(false);
     }
   };
 
-  // 🔥 NOVA FUNÇÃO: Altera o status do documento direto no Firebase
-  const alterarStatusItem = async (id, novoStatus) => {
+  useEffect(() => {
+    buscarTodosAgendamentos();
+  }, []);
+
+  const handleConcluirCorte = async (id) => {
     try {
       const agendamentoRef = doc(db, "agendamentos", id);
-      await updateDoc(agendamentoRef, {
-        status: novoStatus
-      });
+      await updateDoc(agendamentoRef, { status: "concluido" });
       
-      alert(`Status atualizado para ${novoStatus.toUpperCase()} com sucesso!`);
-      // Recarrega os dados na tela para recalcular os cards de faturamento na hora
-      carregarDadosDash();
+      setAgendamentos(agendamentos.map(item => 
+        item.id === id ? { ...item, status: "concluido" } : item
+      ));
+      
+      alert("Corte concluído com sucesso!");
     } catch (error) {
-      console.error("Erro ao atualizar status:", error);
-      alert("Não foi possível atualizar o status no banco.");
+      console.error("Erro ao concluir corte:", error);
+      alert("Não foi possível concluir o agendamento.");
     }
   };
 
-  useEffect(() => {
-    carregarDadosDash();
-  }, []);
+  const handleCancelarAdmin = async (id) => {
+    if (!window.confirm("Deseja realmente cancelar este agendamento?")) return;
+    try {
+      await deleteDoc(doc(db, "agendamentos", id));
+      setAgendamentos(agendamentos.filter(item => item.id !== id));
+      alert("Agendamento removido com sucesso!");
+    } catch (error) {
+      console.error("Erro ao deletar:", error);
+    }
+  };
+
+  // Mapeamento corrigido para aceitar tanto os IDs antigos quanto os novos IDs gerados pelo Firebase
+  const formatarBarbeiro = (id) => {
+    if (id === "barbeiro_1" || id === "b9InIZOqbHXTYHL3VeTa") return "Alan (Cabelo & Barba)";
+    if (id === "barbeiro_2") return "Vitor (Especialista em Degradê)";
+    return id || "Não selecionado";
+  };
+
+  const formatarData = (dataString) => {
+    if (!dataString || typeof dataString !== "string") {
+      if (dataString && dataString.seconds) {
+        const d = new Date(dataString.seconds * 1000);
+        return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+      }
+      return "Data não definida";
+    }
+    try {
+      if (dataString.includes("T")) {
+        const [data, hora] = dataString.split("T");
+        const [ano, mes, dia] = data.split("-");
+        return `${dia}/${mes}/${ano} às ${hora}`;
+      }
+      return dataString;
+    } catch (e) {
+      return "Erro no formato";
+    }
+  };
+
+  // ================= CÁLCULOS DINÂMICOS DO CARD =================
+  const totalConcluidos = agendamentos.filter(item => item.status === "concluido").length;
+  const faturamentoTotal = totalConcluidos * PRECO_CORTE;
+  const totalPendentes = agendamentos.filter(item => item.status !== "concluido").length;
+  const proximoClienteAgendado = agendamentos.find(item => item.status !== "concluido");
+
+  // ================= GRÁFICO 100% REAL EM TEMPO REAL =================
+  // Filtra apenas os concluídos de cada um para gerar a métrica de desempenho real
+  const cortesAlan = agendamentos.filter(item => 
+    item.status === "concluido" && (item.barbeiroId === "barbeiro_1" || item.barbeiroId === "b9InIZOqbHXTYHL3VeTa")
+  ).length;
+
+  const cortesVitor = agendamentos.filter(item => 
+    item.status === "concluido" && item.barbeiroId === "barbeiro_2"
+  ).length;
+
+  // Define uma altura máxima visual em pixels para a maior barra do gráfico não quebrar o layout
+  const maiorQuantidade = Math.max(cortesAlan, cortesVitor, 1);
+  const alturaAlan = (cortesAlan / maiorQuantidade) * 140; 
+  const alturaVitor = (cortesVitor / maiorQuantidade) * 140;
 
   return (
-    <div style={{ maxWidth: "1000px", margin: "40px auto", padding: "20px", fontFamily: "sans-serif" }}>
-      <h2>📈 Painel Administrativo — Barbearia</h2>
-      <p style={{ color: "#666" }}>Visão geral do faturamento consolidado e fluxo do estabelecimento.</p>
-      <hr />
+    <div style={{ maxWidth: "1100px", margin: "40px auto", padding: "20px", fontFamily: "sans-serif" }}>
+      
+      {/* HEADER */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px", borderBottom: "2px solid #eee", paddingBottom: "15px" }}>
+        <h2 style={{ margin: "0", color: "#111" }}>📈 Painel Administrativo</h2>
+        <div>
+          <label style={{ marginRight: "10px", fontWeight: "bold", fontSize: "14px" }}>Faturamento de:</label>
+          <select 
+            value={mesFaturamento} 
+            onChange={(e) => setMesFaturamento(e.target.value)}
+            style={{ padding: "6px 12px", borderRadius: "6px", border: "1px solid #ccc", fontWeight: "bold" }}
+          >
+            <option value="Janeiro">Janeiro</option>
+            <option value="Fevereiro">Fevereiro</option>
+            <option value="Março">Março</option>
+            <option value="Abril">Abril</option>
+            <option value="Maio">Maio</option>
+          </select>
+        </div>
+      </div>
 
-      {carregando ? (
-        <p>Calculando indicadores financeiros...</p>
-      ) : (
-        <>
-          {/* CARDS DE INDICADORES (KPIs) */}
-          <div style={{ display: "flex", gap: "20px", marginBottom: "30px" }}>
-            <div style={{ flex: 1, padding: "20px", backgroundColor: "#d4edda", border: "1px solid #c3e6cb", borderRadius: "8px", textAlign: "center" }}>
-              <h4 style={{ margin: "0 0 10px 0", color: "#155724" }}>💰 Faturamento Real (Concluído)</h4>
-              <p style={{ fontSize: "24px", fontWeight: "bold", margin: 0, color: "#155724" }}>
-                R$ {faturamentoTotal.toFixed(2)}
-              </p>
-            </div>
+      {/* CARDS INDICADORES */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "20px", marginBottom: "40px" }}>
+        <div style={{ backgroundColor: "#fff", padding: "20px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", borderLeft: "5px solid #28a745" }}>
+          <span style={{ fontSize: "14px", color: "#777", fontWeight: "bold", textTransform: "uppercase" }}>Faturamento ({mesFaturamento})</span>
+          <h3 style={{ margin: "10px 0 0 0", fontSize: "28px", color: "#111" }}>
+            {carregando ? "R$ ..." : `R$ ${faturamentoTotal.toFixed(2).replace(".", ",")}`}
+          </h3>
+        </div>
+        
+        <div style={{ backgroundColor: "#fff", padding: "20px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", borderLeft: "5px solid #007bff" }}>
+          <span style={{ fontSize: "14px", color: "#777", fontWeight: "bold", textTransform: "uppercase" }}>Agendamentos Pendentes</span>
+          <h3 style={{ margin: "10px 0 0 0", fontSize: "28px", color: "#111" }}>{carregando ? "..." : totalPendentes}</h3>
+        </div>
 
-            <div style={{ flex: 1, padding: "20px", backgroundColor: "#cce5ff", border: "1px solid #b8daff", borderRadius: "8px", textAlign: "center" }}>
-              <h4 style={{ margin: "0 0 10px 0", color: "#004085" }}>✂️ Clientes Aguardando</h4>
-              <p style={{ fontSize: "24px", fontWeight: "bold", margin: 0, color: "#004085" }}>
-                {totalCortesAtivos}
-              </p>
-            </div>
+        <div style={{ backgroundColor: "#fff", padding: "20px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", borderLeft: "5px solid #ffc107" }}>
+          <span style={{ fontSize: "14px", color: "#777", fontWeight: "bold", textTransform: "uppercase" }}>Próximo Cliente</span>
+          <h3 style={{ margin: "10px 0 0 0", fontSize: "16px", color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {proximoClienteAgendado ? proximoClienteAgendado.clientEmail : "Nenhum pendente"}
+          </h3>
+        </div>
+      </div>
 
-            <div style={{ flex: 1, padding: "20px", backgroundColor: "#f8d7da", border: "1px solid #f5c6cb", borderRadius: "8px", textAlign: "center" }}>
-              <h4 style={{ margin: "0 0 10px 0", color: "#721c24" }}>🚨 Horários Cancelados</h4>
-              <p style={{ fontSize: "24px", fontWeight: "bold", margin: 0, color: "#721c24" }}>
-                {totalCancelados}
-              </p>
-            </div>
+      {/* GRÁFICO DINÂMICO DE ATENDIMENTOS REALIZADOS */}
+      <div style={{ backgroundColor: "#fff", padding: "25px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)", marginBottom: "40px" }}>
+        <h3 style={{ margin: "0 0 20px 0", fontSize: "16px", color: "#444", textTransform: "uppercase", letterSpacing: "0.5px" }}>Desempenho da Equipe (Cortes Concluídos)</h3>
+        <div style={{ display: "flex", gap: "60px", alignItems: "flex-end", height: "200px", paddingBottom: "20px", borderBottom: "2px solid #eee", justifyContent: "center" }}>
+          
+          {/* Barra Alan */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "90px" }}>
+            <span style={{ fontWeight: "bold", marginBottom: "5px", fontSize: "14px" }}>{cortesAlan}</span>
+            <div style={{ width: "100%", height: `${cortesAlan === 0 ? 5 : alturaAlan}px`, backgroundColor: "#111", borderRadius: "6px 6px 0 0", transition: "height 0.3s ease" }}></div>
+            <span style={{ marginTop: "10px", fontSize: "13px", fontWeight: "500", color: "#555", textAlign: "center" }}>Alan</span>
           </div>
 
-          {/* LISTA DE CONTROLE DO GERENTE */}
-          <h3>📋 Fluxo Recente de Clientes</h3>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px", textAlign: "left" }}>
-            <thead>
-              <tr style={{ backgroundColor: "#f2f2f2" }}>
-                <th style={{ padding: "12px", borderBottom: "2px solid #ddd" }}>Cliente</th>
-                <th style={{ padding: "12px", borderBottom: "2px solid #ddd" }}>Serviço</th>
-                <th style={{ padding: "12px", borderBottom: "2px solid #ddd" }}>Preço</th>
-                <th style={{ padding: "12px", borderBottom: "2px solid #ddd" }}>Status</th>
-                <th style={{ padding: "12px", borderBottom: "2px solid #ddd", textAlign: "center" }}>Ações do Gerente</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agendamentos.map((agend) => {
-                // Definir cor baseada no status para ficar fácil de ler
-                let corStatus = "orange";
-                if (agend.status === "concluido") corStatus = "green";
-                if (agend.status === "cancelado") corStatus = "red";
+          {/* Barra Vitor */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "90px" }}>
+            <span style={{ fontWeight: "bold", marginBottom: "5px", fontSize: "14px" }}>{cortesVitor}</span>
+            <div style={{ width: "100%", height: `${cortesVitor === 0 ? 5 : alturaVitor}px`, backgroundColor: "#555", borderRadius: "6px 6px 0 0", transition: "height 0.3s ease" }}></div>
+            <span style={{ marginTop: "10px", fontSize: "13px", fontWeight: "500", color: "#555", textAlign: "center" }}>Vitor</span>
+          </div>
 
-                return (
-                  <tr key={agend.id} style={{ borderBottom: "1px solid #ddd" }}>
-                    <td style={{ padding: "12px" }}>{agend.clienteId}</td>
-                    <td style={{ padding: "12px" }}>{agend.servicoNome}</td>
-                    <td style={{ padding: "12px" }}>R$ {Number(agend.preco || 0).toFixed(2)}</td>
-                    <td style={{ padding: "12px", fontWeight: "bold", color: corStatus }}>
-                      {agend.status.toUpperCase()}
-                    </td>
-                    <td style={{ padding: "12px", textAlign: "center" }}>
-                      {agend.status === "confirmado" ? (
-                        <button
-                          onClick={() => alterarStatusItem(agend.id, "concluido")}
-                          style={{
-                            padding: "6px 12px",
-                            backgroundColor: "#28a745",
-                            color: "#fff",
-                            border: "none",
-                            borderRadius: "4px",
-                            fontWeight: "bold",
-                            cursor: "pointer"
-                          }}
-                        >
-                          ✓ Concluir Serviço
-                        </button>
-                      ) : (
-                        <span style={{ color: "#888", fontSize: "14px", fontStyle: "italic" }}>
-                          Sem ações pendentes
-                        </span>
-                      )}
-                    </td>
+        </div>
+      </div>
+
+      {/* GERENCIADOR DE HORÁRIOS */}
+      <div style={{ backgroundColor: "#fff", padding: "25px", borderRadius: "10px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+        <h3 style={{ margin: "0 0 20px 0", fontSize: "16px", color: "#444", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          Gerenciador de Horários
+        </h3>
+
+        {erro && (
+          <p style={{ color: "red", backgroundColor: "#fde8e8", padding: "15px", borderRadius: "6px", textAlign: "center", fontWeight: "bold" }}>
+            {erro}
+          </p>
+        )}
+
+        {carregando && !erro ? (
+          <p style={{ textAlign: "center", color: "#999" }}>Carregando dados do servidor...</p>
+        ) : agendamentos.length === 0 && !erro ? (
+          <p style={{ textAlign: "center", color: "#999", padding: "30px", border: "1px dashed #ccc", borderRadius: "8px" }}>
+            Nenhum cliente agendado no sistema.
+          </p>
+        ) : (
+          !erro && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+                <thead>
+                  <tr style={{ backgroundColor: "#111", color: "#fff" }}>
+                    <th style={{ padding: "12px 15px", borderRadius: "6px 0 0 6px" }}>Cliente</th>
+                    <th style={{ padding: "12px 15px" }}>Profissional</th>
+                    <th style={{ padding: "12px 15px" }}>Data e Horário</th>
+                    <th style={{ padding: "12px 15px" }}>Status</th>
+                    <th style={{ padding: "12px 15px", borderRadius: "0 6px 6px 0", textAlign: "center" }}>Ações</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
+                </thead>
+                <tbody>
+                  {agendamentos.map((item) => (
+                    <tr key={item.id} style={{ borderBottom: "1px solid #eee", backgroundColor: item.status === "concluido" ? "#f8f9fa" : "transparent" }}>
+                      <td style={{ padding: "12px 15px", color: "#333", fontSize: "14px" }}>
+                        {item.clientEmail || "Não informado"}
+                      </td>
+                      <td style={{ padding: "12px 15px", color: "#333", fontWeight: "500" }}>
+                        {formatarBarbeiro(item.barbeiroId)}
+                      </td>
+                      <td style={{ padding: "12px 15px", color: "#666" }}>
+                        {formatarData(item.dataHorario)}
+                      </td>
+                      <td style={{ padding: "12px 15px" }}>
+                        {item.status === "concluido" ? (
+                          <span style={{ color: "#28a745", fontWeight: "bold", fontSize: "13px" }}>✅ Concluído</span>
+                        ) : (
+                          <span style={{ color: "#007bff", fontWeight: "bold", fontSize: "13px" }}>🗓️ Confirmado</span>
+                        )}
+                      </td>
+                      <td style={{ padding: "12px 15px", display: "flex", gap: "10px", justifyContent: "center" }}>
+                        
+                        {item.status !== "concluido" && (
+                          <button 
+                            onClick={() => handleConcluirCorte(item.id)}
+                            style={{ padding: "6px 12px", backgroundColor: "#28a745", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: "12px" }}
+                          >
+                            Concluir
+                          </button>
+                        )}
+
+                        <button 
+                          onClick={() => handleCancelarAdmin(item.id)}
+                          style={{ padding: "6px 12px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontWeight: "bold", fontSize: "12px" }}
+                        >
+                          Excluir
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </div>
+
     </div>
   );
 }

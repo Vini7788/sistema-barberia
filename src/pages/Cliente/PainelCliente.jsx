@@ -1,119 +1,129 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useAuth } from "../../context/AuthContext";
 import { db } from "../../firebase";
-import { collection, query, where, getDocs, doc, updateDoc } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, deleteDoc } from "firebase/firestore";
 
 export default function PainelCliente() {
-  const [meusAgendamentos, setMeusAgendamentos] = useState([]);
+  const { usuarioLogado } = useAuth();
+  const [agendamentos, setAgendamentos] = useState([]);
   const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
 
-  // Simulando o cliente logado. Depois integraremos com o Firebase Auth (usuarios)
-  const clienteLogadoId = "Aleatorio"; 
-
-  const carregarHistorico = async () => {
+  // Função para buscar os agendamentos do banco de dados
+  const buscarAgendamentos = async () => {
+    if (!usuarioLogado) return;
+    
     try {
-      // Cria uma busca filtrando os agendamentos apenas deste cliente específico
-      const q = query(collection(db, "agendamentos"), where("clienteId", "==", clienteLogadoId));
-      const querySnapshot = await getDocs(q);
-      
-      const lista = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        // Converte o Timestamp do Firebase para um objeto Date do JavaScript
-        dataHorario: doc.data().dataHorario?.toDate() 
-      }));
+      setCarregando(true);
+      // Cria uma consulta filtrando apenas onde o clientId é igual ao ID do usuário logado
+      const q = query(
+        collection(db, "agendamentos"),
+        where("clientId", "==", usuarioLogado.uid)
+      );
 
-      setMeusAgendamentos(lista);
-    } catch (error) {
-      console.error("Erro ao carregar painel:", error);
+      const querySnapshot = await getDocs(q);
+      const listaAgendamentos = [];
+      
+      querySnapshot.forEach((documento) => {
+        listaAgendamentos.push({
+          id: documento.id,
+          ...documento.data()
+        });
+      });
+
+      // Ordena por data mais recente (opcional, baseado na string do datetime-local)
+      listaAgendamentos.sort((a, b) => new Date(a.dataHorario) - new Date(b.dataHorario));
+
+      setAgendamentos(listaAgendamentos);
+    } catch (err) {
+      console.error("Erro ao buscar agendamentos:", err);
+      setErro("Não foi possível carregar seus agendamentos.");
     } finally {
       setCarregando(false);
     }
   };
 
   useEffect(() => {
-    carregarHistorico();
-  }, []);
+    buscarAgendamentos();
+  }, [usuarioLogado]);
 
-  // Regra de Negócio: Cancelamento autônomo com limite de 2 horas de antecedência
-  const lidarComCancelamento = async (agendamentoId, dataHorario) => {
-    if (!dataHorario) return;
+  // Função para cancelar (excluir) um agendamento
+  const handleCancelar = async (idDoAgendamento) => {
+    const confirmar = window.confirm("Tem certeza que deseja cancelar este horário?");
+    if (!confirmar) return;
 
-    const agora = new Date();
-    const duasHorasEmMilissegundos = 2 * 60 * 60 * 1000;
-
-    // Calcula a diferença de tempo entre o horário do corte e o momento atual
-    const diferencaTempo = dataHorario.getTime() - agora.getTime();
-
-    if (diferencaTempo < duasHorasEmMilissegundos) {
-      alert("🚨 Bloqueado: Não é possível cancelar com menos de 2 horas de antecedência. Entre em contato por telefone.");
-      return;
+    try {
+      await deleteDoc(doc(db, "agendamentos", idDoAgendamento));
+      // Atualiza a tela removendo o item deletado da lista
+      setAgendamentos(agendamentos.filter(item => item.id !== idDoAgendamento));
+      alert("Horário cancelado com sucesso!");
+    } catch (err) {
+      console.error("Erro ao deletar:", err);
+      alert("Não foi possível cancelar o horário. Tente novamente.");
     }
+  };
 
-    if (confirm("Tem certeza que deseja cancelar este agendamento?")) {
-      try {
-        const agendamentoRef = doc(db, "agendamentos", agendamentoId);
-        
-        // Em vez de deletar o registro, mudamos o status para "cancelado" (Melhor para métricas de ADM!)
-        await updateDoc(agendamentoRef, {
-          status: "cancelado"
-        });
+  // Função auxiliar para deixar o nome do barbeiro amigável na tela
+  const formatarBarbeiro = (id) => {
+    if (id === "barbeiro_1") return "Alan (Cabelo & Barba)";
+    if (id === "barbeiro_2") return "Vitor (Especialista em Degradê)";
+    return id;
+  };
 
-        alert("Agendamento cancelado com sucesso. 🤝");
-        carregarHistorico(); // Recarrega a lista
-      } catch (error) {
-        console.error("Erro ao cancelar:", error);
-        alert("Erro técnico ao processar cancelamento.");
-      }
-    }
+  // Função para formatar a exibição da data (YYYY-MM-DDTHH:MM -> DD/MM/YYYY às HH:MM)
+  const formatarData = (dataString) => {
+    if (!dataString) return "";
+    const [data, hora] = dataString.split("T");
+    const [ano, mes, dia] = data.split("-");
+    return `${dia}/${mes}/${ano} às ${hora}`;
   };
 
   return (
     <div style={{ maxWidth: "600px", margin: "40px auto", padding: "20px", fontFamily: "sans-serif" }}>
-      <h2>👤 Painel do Cliente</h2>
-      <p style={{ color: "#666" }}>Olá, <strong>{clienteLogadoId}</strong>. Gerencie seus horários abaixo:</p>
-      <hr />
+      <div style={{ textAlign: "center", marginBottom: "30px" }}>
+        <h2 style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", color: "#111" }}>
+          👤 Painel do Cliente
+        </h2>
+        <p style={{ color: "#555" }}>
+          Olá, <strong style={{ color: "#007bff" }}>{usuarioLogado?.email}</strong>. Gerencie seus horários abaixo:
+        </p>
+        <hr style={{ border: "0", borderTop: "1px solid #ddd", margin: "20px 0" }} />
+      </div>
 
-      <h3>Meus Agendamentos</h3>
+      <h3 style={{ textTransform: "uppercase", fontSize: "16px", color: "#666", letterSpacing: "1px", textAlign: "center", marginBottom: "20px" }}>
+        Meus Agendamentos
+      </h3>
+
+      {erro && <p style={{ color: "red", textAlign: "center" }}>{erro}</p>}
 
       {carregando ? (
-        <p>Carregando seu histórico...</p>
-      ) : meusAgendamentos.length === 0 ? (
-        <p>Você ainda não realizou nenhum agendamento.</p>
+        <p style={{ textAlign: "center", color: "#999" }}>Carregando seus horários...</p>
+      ) : agendamentos.length === 0 ? (
+        <p style={{ textAlign: "center", color: "#999", backgroundColor: "#f9f9f9", padding: "20px", borderRadius: "8px", border: "1px dashed #ccc" }}>
+          Você ainda não possui nenhum horário agendado.
+        </p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
-          {meusAgendamentos.map((agend) => {
-            const dataValida = agend.dataHorario instanceof Date;
-            
-            return (
-              <div key={agend.id} style={{ padding: "15px", border: "1px solid #ddd", borderRadius: "8px", backgroundColor: agend.status === "cancelado" ? "#f8d7da" : "#fff" }}>
-                <p style={{ margin: "0 0 5px 0" }}><strong>Serviço:</strong> {agend.servicoNome}</p>
-                
-                <p style={{ margin: "0 0 5px 0" }}>
-                  <strong>Data/Hora:</strong> {dataValida ? agend.dataHorario.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "Não informada"}
-                </p>
-
-                <p style={{ margin: "0 0 10px 0" }}>
-                  <strong>Status:</strong>{" "}
-                  <span style={{ 
-                    fontWeight: "bold", 
-                    color: agend.status === "confirmado" ? "green" : agend.status === "cancelado" ? "red" : "orange" 
-                  }}>
-                    {agend.status.toUpperCase()}
-                  </span>
-                </p>
-
-                {/* Exibe o botão de cancelamento apenas se o agendamento ainda estiver ativo */}
-                {agend.status === "confirmado" && (
-                  <button
-                    onClick={() => lidarComCancelamento(agend.id, agend.dataHorario)}
-                    style={{ padding: "8px 12px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontWeight: "bold" }}
-                  >
-                    Cancelar Horário
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          {agendamentos.map((agendamento) => (
+            <div key={agendamento.id} style={{ padding: "20px", backgroundColor: "#fff", borderRadius: "8px", boxShadow: "0 2px 8px rgba(0,0,0,0.05)", border: "1px solid #eee", display: "flex", flexDirection: "column", gap: "8px", position: "relative" }}>
+              <p style={{ margin: "0", color: "#444" }}>
+                <strong>Profissional:</strong> {formatarBarbeiro(agendamento.barbeiroId)}
+              </p>
+              <p style={{ margin: "0", color: "#444" }}>
+                <strong>Data/Hora:</strong> {formatarData(agendamento.dataHorario)}
+              </p>
+              <p style={{ margin: "0", color: "#444" }}>
+                <strong>Status:</strong> <span style={{ color: "green", fontWeight: "bold" }}>CONFIRMADO</span>
+              </p>
+              
+              <button 
+                onClick={() => handleCancelar(agendamento.id)}
+                style={{ alignSelf: "flex-start", marginTop: "5px", padding: "6px 12px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "4px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" }}
+              >
+                Cancelar Horário
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>
