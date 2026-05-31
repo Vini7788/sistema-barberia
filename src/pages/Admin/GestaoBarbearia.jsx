@@ -329,7 +329,7 @@ export default function GestaoEquipe() {
             </span>
           )}
         </div>
-      </div>
+      </div>  
     </div>
   );
 }
