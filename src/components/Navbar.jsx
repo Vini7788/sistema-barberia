@@ -1,18 +1,20 @@
 import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext.jsx"; // Importando seu hook de autenticação
+import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Navbar() {
-  const { usuarioLogado, deslogar } = useAuth(); // Pegando o usuário e a função de logout
+  const { usuarioLogado, role, deslogar } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
     try {
       await deslogar();
-      navigate("/login"); // Chuta o usuário de volta para a tela de login após deslogar
+      navigate("/login");
     } catch (error) {
       console.error("Erro ao deslogar:", error);
     }
   };
+
+  const eFuncionario = role === "dono" || role === "barbeiro";
 
   return (
     <nav style={{
@@ -27,24 +29,40 @@ export default function Navbar() {
       <div style={{ fontWeight: "bold", fontSize: "18px" }}>
         💈 Barbearia Premium
       </div>
-      
+
       <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-        {/* SE O USUÁRIO ESTIVER LOGADO, MOSTRA OS LINKS DO SISTEMA */}
         {usuarioLogado ? (
           <>
-            <Link to="/" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
-              Novo Agendamento
-            </Link>
-            <Link to="/meus-agendamentos" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
-              Meus Agendamentos
-            </Link>
-            <Link to="/admin/dashboard" style={{ color: "#999", textDecoration: "none", fontSize: "14px", borderLeft: "1px solid #444", paddingLeft: "20px" }}>
-              Área do Admin 📈
-            </Link>
-            
-            {/* Botão de Sair charmoso para limpar a sessão */}
-            <button 
-              onClick={handleLogout} 
+            {/* Links visíveis apenas para CLIENTES */}
+            {role === "cliente" && (
+              <>
+                <Link to="/" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
+                  Novo Agendamento
+                </Link>
+                <Link to="/meus-agendamentos" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
+                  Meus Agendamentos
+                </Link>
+              </>
+            )}
+
+            {/* Links visíveis apenas para DONO e BARBEIRO */}
+            {eFuncionario && (
+              <>
+                <Link to="/admin/dashboard" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
+                  📈 Dashboard
+                </Link>
+
+                {/* Gestão de Equipe só para o DONO */}
+                {role === "dono" && (
+                  <Link to="/admin/gestao-equipe" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
+                    👥 Equipe
+                  </Link>
+                )}
+              </>
+            )}
+
+            <button
+              onClick={handleLogout}
               style={{
                 background: "none",
                 border: "1px solid #ff4d4d",
@@ -55,7 +73,6 @@ export default function Navbar() {
                 fontWeight: "bold",
                 fontSize: "13px",
                 marginLeft: "10px",
-                transition: "0.2s"
               }}
               onMouseOver={(e) => { e.target.style.backgroundColor = "#ff4d4d"; e.target.style.color = "#fff"; }}
               onMouseOut={(e) => { e.target.style.backgroundColor = "transparent"; e.target.style.color = "#ff4d4d"; }}
@@ -64,7 +81,6 @@ export default function Navbar() {
             </button>
           </>
         ) : (
-          /* SE NÃO ESTIVER LOGADO, MOSTRA APENAS O LINK DE LOGIN */
           <Link to="/login" style={{ color: "#007bff", textDecoration: "none", fontWeight: "bold" }}>
             Fazer Login
           </Link>

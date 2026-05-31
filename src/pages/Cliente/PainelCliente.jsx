@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { db } from "../../firebase";
 import { collection, getDocs, doc, deleteDoc } from "firebase/firestore";
+import { useAuth } from "../../context/AuthContext.jsx";
 
 export default function PainelCliente() {
-  const [clientEmail] = useState("barber_sucesso@teste.com");
+  const { usuarioLogado } = useAuth();
+  const clientEmail = usuarioLogado?.email || "";
+
   const [meusAgendamentos, setMeusAgendamentos] = useState([]);
   const [barbeiros, setBarbeiros] = useState([]);
   const [servicos, setServicos] = useState([]);
@@ -13,32 +16,16 @@ export default function PainelCliente() {
     try {
       setCarregando(true);
 
-      // 1. Carrega mapeamento de barbeiros
       const qBarbeiros = await getDocs(collection(db, "profissionais"));
       const bLista = [];
       qBarbeiros.forEach(d => bLista.push({ id: d.id, ...d.data() }));
-      if (bLista.length === 0) {
-        bLista.push(
-          { id: "b9InIZOqbHXTYHL3VeTa", nome: "Alan (Cabelo & Barba)" },
-          { id: "barbeiro_2", nome: "Vitor (Especialista em Degradê)" }
-        );
-      }
       setBarbeiros(bLista);
 
-      // 2. Carrega mapeamento de serviços
       const qServicos = await getDocs(collection(db, "servicos"));
       const sLista = [];
       qServicos.forEach(d => sLista.push({ id: d.id, ...d.data() }));
-      if (sLista.length === 0) {
-        sLista.push(
-          { id: "servico_1", nome: "Corte Masculino", preco: 45.00 },
-          { id: "servico_2", nome: "Barba Completa", preco: 35.00 },
-          { id: "servico_3", nome: "Combo (Cabelo + Barba)", preco: 70.00 }
-        );
-      }
       setServicos(sLista);
 
-      // 3. Carrega agendamentos e filtra pelo email logado
       const querySnapshot = await getDocs(collection(db, "agendamentos"));
       const lista = [];
       querySnapshot.forEach((documento) => {
@@ -48,6 +35,8 @@ export default function PainelCliente() {
         }
       });
 
+      // Ordena por data decrescente (mais recentes primeiro)
+      lista.sort((a, b) => new Date(b.dataHorario) - new Date(a.dataHorario));
       setMeusAgendamentos(lista);
     } catch (e) {
       console.error("Erro ao carregar painel do cliente:", e);
@@ -57,8 +46,8 @@ export default function PainelCliente() {
   };
 
   useEffect(() => {
-    carregarDadosCliente();
-  }, []);
+    if (clientEmail) carregarDadosCliente();
+  }, [clientEmail]);
 
   const handleCancelarHorario = async (id) => {
     if (!window.confirm("Deseja realmente cancelar este horário?")) return;
@@ -96,18 +85,22 @@ export default function PainelCliente() {
       <h2 style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "10px", color: "#111" }}>
         👤 Painel do Cliente
       </h2>
-      <p style={{ color: "#555" }}>Olá, <strong style={{ color: "#007bff" }}>{clientEmail}</strong>. Gerencie seus horários abaixo:</p>
-      
+      <p style={{ color: "#555" }}>
+        Olá, <strong style={{ color: "#007bff" }}>{clientEmail}</strong>. Gerencie seus horários abaixo:
+      </p>
+
       <hr style={{ border: "0", borderTop: "1px solid #eee", margin: "30px 0" }} />
-      
+
       <h3 style={{ fontSize: "14px", color: "#777", letterSpacing: "1px", textTransform: "uppercase", marginBottom: "20px" }}>
         Meus Agendamentos
       </h3>
 
       {carregando ? (
-        <p style={{ color: "#999" }}>A carregar os seus agendamentos...</p>
+        <p style={{ color: "#999" }}>Carregando seus agendamentos...</p>
       ) : meusAgendamentos.length === 0 ? (
-        <p style={{ color: "#999", padding: "20px", border: "1px dashed #ccc", borderRadius: "8px" }}>Você não possui horários agendados.</p>
+        <p style={{ color: "#999", padding: "20px", border: "1px dashed #ccc", borderRadius: "8px" }}>
+          Você não possui horários agendados.
+        </p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {meusAgendamentos.map((item) => (
@@ -116,7 +109,10 @@ export default function PainelCliente() {
                 <strong>Profissional:</strong> {obterNomeBarbeiro(item.barbeiroId)}
               </p>
               <p style={{ margin: "5px 0", fontSize: "15px" }}>
-                <strong>Serviço:</strong> <span style={{ backgroundColor: "#f1f1f1", padding: "2px 6px", borderRadius: "4px", fontWeight: "600" }}>{obterNomeServico(item.servicoId)}</span>
+                <strong>Serviço:</strong>{" "}
+                <span style={{ backgroundColor: "#f1f1f1", padding: "2px 6px", borderRadius: "4px", fontWeight: "600" }}>
+                  {obterNomeServico(item.servicoId)}
+                </span>
               </p>
               <p style={{ margin: "5px 0", fontSize: "15px" }}>
                 <strong>Data/Hora:</strong> {formatarData(item.dataHorario)}
@@ -127,9 +123,12 @@ export default function PainelCliente() {
                   {item.status ? item.status.toUpperCase() : "CONFIRMADO"}
                 </span>
               </p>
-              
+
               {item.status !== "concluido" && (
-                <button onClick={() => handleCancelarHorario(item.id)} style={{ marginTop: "10px", padding: "8px 16px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontWeight: "bold", fontSize: "13px" }}>
+                <button
+                  onClick={() => handleCancelarHorario(item.id)}
+                  style={{ marginTop: "10px", padding: "8px 16px", backgroundColor: "#dc3545", color: "#fff", border: "none", borderRadius: "5px", cursor: "pointer", fontWeight: "bold", fontSize: "13px" }}
+                >
                   Cancelar Horário
                 </button>
               )}
