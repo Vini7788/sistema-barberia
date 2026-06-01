@@ -54,7 +54,7 @@ export default function Navbar() {
 
                 {/* Gestão de Equipe só para o DONO */}
                 {role === "dono" && (
-                  <Link to="/admin/gestao-equipe" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
+                  <Link to="/admin/gestao-barbearia" style={{ color: "#fff", textDecoration: "none", fontWeight: "500" }}>
                     👥 Equipe
                   </Link>
                 )}

@@ -3,6 +3,8 @@ import { db } from "../../firebase";
 import { collection, getDocs, addDoc, doc, getDoc } from "firebase/firestore";
 import { useAuth } from "../../context/AuthContext.jsx";
 
+const DIAS_SEMANA = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
+
 export default function Agendamento() {
   const { usuarioLogado } = useAuth();
   const clientEmail = usuarioLogado?.email || "";
@@ -10,233 +12,271 @@ export default function Agendamento() {
   const [barbeiros, setBarbeiros] = useState([]);
   const [servicos, setServicos] = useState([]);
   const [horariosFuncionamento, setHorariosFuncionamento] = useState(null);
+  const [agendamentosExistentes, setAgendamentosExistentes] = useState([]);
 
-  const [barbeiroSelecionado, setBarbeiroSelecionado] = useState("");
+  // Seleções do cliente
   const [servicoSelecionado, setServicoSelecionado] = useState("");
-  const [dataHorario, setDataHorario] = useState("");
+  const [barbeiroSelecionado, setBarbeiroSelecionado] = useState("");
+  const [dataSelecionada, setDataSelecionada] = useState("");
+
+  // Horários disponíveis calculados
+  const [horariosDisponiveis, setHorariosDisponiveis] = useState([]);
+  const [horarioEscolhido, setHorarioEscolhido] = useState("");
 
   const [carregando, setCarregando] = useState(true);
+  const [calculandoHorarios, setCalculandoHorarios] = useState(false);
   const [enviando, setEnviando] = useState(false);
-  const [erroHorario, setErroHorario] = useState("");
-
-  const DIAS_SEMANA = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
-
-  const carregarDadosFormulario = async () => {
-    try {
-      setCarregando(true);
-
-      const queryBarbeiros = await getDocs(collection(db, "profissionais"));
-      const listaBarbeiros = [];
-      queryBarbeiros.forEach((d) => listaBarbeiros.push({ id: d.id, ...d.data() }));
-      setBarbeiros(listaBarbeiros);
-
-      const queryServicos = await getDocs(collection(db, "servicos"));
-      const listaServicos = [];
-      queryServicos.forEach((d) => listaServicos.push({ id: d.id, ...d.data() }));
-      setServicos(listaServicos);
-
-      // Busca os horários de funcionamento cadastrados pelo dono
-      const docHorarios = await getDoc(doc(db, "configuracoes", "horarios"));
-      if (docHorarios.exists()) {
-        setHorariosFuncionamento(docHorarios.data());
-      }
-    } catch (error) {
-      console.error("Erro ao carregar dados de agendamento:", error);
-    } finally {
-      setCarregando(false);
-    }
-  };
 
   useEffect(() => {
-    carregarDadosFormulario();
+    const carregar = async () => {
+      try {
+        const snapB = await getDocs(collection(db, "profissionais"));
+        const listaB = [];
+        snapB.forEach((d) => listaB.push({ id: d.id, ...d.data() }));
+        setBarbeiros(listaB);
+
+        const snapS = await getDocs(collection(db, "servicos"));
+        const listaS = [];
+        snapS.forEach((d) => listaS.push({ id: d.id, ...d.data() }));
+        setServicos(listaS);
+
+        const docH = await getDoc(doc(db, "configuracoes", "horarios"));
+        if (docH.exists()) setHorariosFuncionamento(docH.data());
+
+        const snapA = await getDocs(collection(db, "agendamentos"));
+        const listaA = [];
+        snapA.forEach((d) => listaA.push({ id: d.id, ...d.data() }));
+        setAgendamentosExistentes(listaA);
+      } catch (err) {
+        console.error("Erro ao carregar:", err);
+      } finally {
+        setCarregando(false);
+      }
+    };
+    carregar();
   }, []);
 
-  // Valida se o horário escolhido está dentro do funcionamento
-  const validarHorario = (dataHoraStr) => {
-    if (!dataHoraStr || !horariosFuncionamento) return true; // sem restrições cadastradas
+  // Recalcula horários disponíveis sempre que barbeiro, serviço ou data mudar
+  useEffect(() => {
+    if (!barbeiroSelecionado || !servicoSelecionado || !dataSelecionada) {
+      setHorariosDisponiveis([]);
+      setHorarioEscolhido("");
+      return;
+    }
+    calcularHorariosDisponiveis();
+  }, [barbeiroSelecionado, servicoSelecionado, dataSelecionada]);
 
-    const data = new Date(dataHoraStr);
-    const diaSemana = DIAS_SEMANA[data.getDay()];
-    const config = horariosFuncionamento[diaSemana];
+  const calcularHorariosDisponiveis = () => {
+    setCalculandoHorarios(true);
+    setHorarioEscolhido("");
+
+    const servico = servicos.find((s) => s.id === servicoSelecionado);
+    if (!servico || !servico.duracao) { setHorariosDisponiveis([]); setCalculandoHorarios(false); return; }
+
+    const duracaoMin = Number(servico.duracao);
+    const dataObj = new Date(dataSelecionada + "T00:00:00");
+    const diaSemana = DIAS_SEMANA[dataObj.getDay()];
+    const configDia = horariosFuncionamento?.[diaSemana];
 
     // Dia fechado
-    if (!config || !config.aberto) {
-      const nomesDias = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
-      return `A barbearia não abre às ${nomesDias[data.getDay()]}s.`;
+    if (!configDia || !configDia.aberto) { setHorariosDisponiveis([]); setCalculandoHorarios(false); return; }
+
+    const [hAbre, mAbre] = configDia.abertura.split(":").map(Number);
+    const [hFecha, mFecha] = configDia.fechamento.split(":").map(Number);
+    const minutosAbertura  = hAbre * 60 + mAbre;
+    const minutosFechamento = hFecha * 60 + mFecha;
+
+    // Busca agendamentos do barbeiro nesse dia e calcula blocos ocupados
+    const agendamentosDoDia = agendamentosExistentes.filter((ag) => {
+      if (ag.barbeiroId !== barbeiroSelecionado) return false;
+      if (!ag.dataHorario) return false;
+      const dataAg = ag.dataHorario.split("T")[0];
+      return dataAg === dataSelecionada && ag.status !== "cancelado";
+    });
+
+    // Para cada agendamento existente, calcula o intervalo bloqueado
+    const blocos = agendamentosDoDia.map((ag) => {
+      const horaStr = ag.dataHorario.split("T")[1]?.substring(0, 5) || "00:00";
+      const [h, m] = horaStr.split(":").map(Number);
+      const inicio = h * 60 + m;
+      const servicoDoAg = servicos.find((s) => s.id === ag.servicoId);
+      const duracaoAg = servicoDoAg?.duracao ? Number(servicoDoAg.duracao) : 30;
+      return { inicio, fim: inicio + duracaoAg };
+    });
+
+    // Gera slots de 30 em 30 minutos dentro do horário de funcionamento
+    const slots = [];
+    const hoje = new Date();
+    const ehHoje = dataSelecionada === hoje.toISOString().split("T")[0];
+    const minutosAgora = hoje.getHours() * 60 + hoje.getMinutes();
+
+    for (let min = minutosAbertura; min + duracaoMin <= minutosFechamento; min += 30) {
+      // Se for hoje, não mostrar horários que já passaram
+      if (ehHoje && min <= minutosAgora) continue;
+
+      const fimSlot = min + duracaoMin;
+
+      // Verifica se o slot conflita com algum agendamento existente
+      const conflito = blocos.some((b) => min < b.fim && fimSlot > b.inicio);
+      if (conflito) continue;
+
+      const hh = String(Math.floor(min / 60)).padStart(2, "0");
+      const mm = String(min % 60).padStart(2, "0");
+      slots.push(`${hh}:${mm}`);
     }
 
-    // Verifica se o horário está dentro do intervalo
-    const [hAbre, mAbre] = config.abertura.split(":").map(Number);
-    const [hFecha, mFecha] = config.fechamento.split(":").map(Number);
-    const horaEscolhida = data.getHours() * 60 + data.getMinutes();
-    const horaAbertura = hAbre * 60 + mAbre;
-    const horaFechamento = hFecha * 60 + mFecha;
-
-    if (horaEscolhida < horaAbertura || horaEscolhida >= horaFechamento) {
-      return `Horário fora do funcionamento. ${config.abertura} às ${config.fechamento}.`;
-    }
-
-    return true;
+    setHorariosDisponiveis(slots);
+    setCalculandoHorarios(false);
   };
 
-  const handleDataChange = (e) => {
-    const valor = e.target.value;
-    setDataHorario(valor);
-    const resultado = validarHorario(valor);
-    setErroHorario(resultado === true ? "" : resultado);
-  };
-
-  const handleSalvarAgendamento = async (e) => {
-    e.preventDefault();
-
-    if (!barbeiroSelecionado || !servicoSelecionado || !dataHorario) {
-      alert("Por favor, preencha todos os campos antes de confirmar!");
+  const handleSalvarAgendamento = async () => {
+    if (!barbeiroSelecionado || !servicoSelecionado || !dataSelecionada || !horarioEscolhido) {
+      alert("Selecione todos os campos antes de confirmar!");
       return;
     }
-
-    const validacao = validarHorario(dataHorario);
-    if (validacao !== true) {
-      alert(`⚠️ ${validacao}`);
-      return;
-    }
-
     try {
       setEnviando(true);
-
+      const dataHorario = `${dataSelecionada}T${horarioEscolhido}`;
       const novoAgendamento = {
-        clientEmail: clientEmail,
+        clientEmail,
         barbeiroId: barbeiroSelecionado,
         servicoId: servicoSelecionado,
-        dataHorario: dataHorario,
+        dataHorario,
         status: "confirmado",
         criadoEm: new Date().toISOString(),
       };
-
-      await addDoc(collection(db, "agendamentos"), novoAgendamento);
-
+      const ref = await addDoc(collection(db, "agendamentos"), novoAgendamento);
+      // Atualiza lista local para bloquear o horário imediatamente
+      setAgendamentosExistentes((p) => [...p, { id: ref.id, ...novoAgendamento }]);
       alert("🎉 Agendamento realizado com sucesso!");
-      setBarbeiroSelecionado("");
-      setServicoSelecionado("");
-      setDataHorario("");
-      setErroHorario("");
-    } catch (error) {
-      console.error("Erro ao salvar agendamento:", error);
-      alert("Houve um erro ao salvar o agendamento. Tente novamente.");
+      setServicoSelecionado(""); setBarbeiroSelecionado(""); setDataSelecionada("");
+      setHorarioEscolhido(""); setHorariosDisponiveis([]);
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao salvar agendamento.");
     } finally {
       setEnviando(false);
     }
   };
 
-  if (carregando) {
-    return (
-      <div style={{ textAlign: "center", marginTop: "100px", fontFamily: "sans-serif" }}>
-        <h3>Carregando opções de agendamento...</h3>
-      </div>
-    );
-  }
+  const servicoAtual = servicos.find((s) => s.id === servicoSelecionado);
+
+  // Data mínima = hoje
+  const hoje = new Date().toISOString().split("T")[0];
+
+  if (carregando) return (
+    <div style={{ textAlign: "center", marginTop: "100px", fontFamily: "sans-serif" }}>
+      <h3>Carregando...</h3>
+    </div>
+  );
 
   return (
-    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "80vh", backgroundColor: "#f8f9fa", fontFamily: "sans-serif" }}>
-      <div style={{ backgroundColor: "#fff", padding: "40px", borderRadius: "10px", boxShadow: "0 4px 15px rgba(0,0,0,0.05)", width: "100%", maxWidth: "450px" }}>
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-start", minHeight: "80vh", backgroundColor: "#f8f9fa", fontFamily: "sans-serif", padding: "40px 20px" }}>
+      <div style={{ backgroundColor: "#fff", padding: "40px", borderRadius: "10px", boxShadow: "0 4px 15px rgba(0,0,0,0.05)", width: "100%", maxWidth: "500px" }}>
 
-        <h2 style={{ textAlign: "center", marginBottom: "30px", color: "#111", fontSize: "24px", fontWeight: "bold" }}>
+        <h2 style={{ textAlign: "center", marginBottom: "8px", color: "#111", fontSize: "24px", fontWeight: "bold" }}>
           Agende seu Horário
         </h2>
+        <p style={{ textAlign: "center", color: "#888", fontSize: "13px", marginBottom: "30px" }}>
+          Olá, <strong>{clientEmail}</strong>
+        </p>
 
-        <form onSubmit={handleSalvarAgendamento} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
 
-          {/* Cliente ativo */}
+          {/* 1. Serviço */}
           <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px", textAlign: "center" }}>
-              Cliente Ativo:
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
+              1. Escolha o Serviço
             </label>
-            <input
-              type="text"
-              value={clientEmail}
-              disabled
-              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", backgroundColor: "#f1f1f1", color: "#666", textAlign: "center", fontWeight: "500", boxSizing: "border-box" }}
-            />
-          </div>
-
-          {/* Serviço */}
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px", textAlign: "center" }}>
-              Escolha o Serviço:
-            </label>
-            <select
-              value={servicoSelecionado}
-              onChange={(e) => setServicoSelecionado(e.target.value)}
-              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", cursor: "pointer", boxSizing: "border-box" }}
-            >
+            <select value={servicoSelecionado} onChange={(e) => { setServicoSelecionado(e.target.value); setBarbeiroSelecionado(""); setDataSelecionada(""); setHorarioEscolhido(""); }}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", boxSizing: "border-box" }}>
               <option value="">Selecione um serviço...</option>
-              {servicos.map((serv) => (
-                <option key={serv.id} value={serv.id}>
-                  {serv.nome} — R$ {Number(serv.preco).toFixed(2).replace(".", ",")}
+              {servicos.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nome} — R$ {Number(s.preco).toFixed(2).replace(".", ",")} ({s.duracao} min)
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Barbeiro */}
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px", textAlign: "center" }}>
-              Escolha o Profissional:
-            </label>
-            <select
-              value={barbeiroSelecionado}
-              onChange={(e) => setBarbeiroSelecionado(e.target.value)}
-              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", cursor: "pointer", boxSizing: "border-box" }}
-            >
-              <option value="">Selecione um barbeiro...</option>
-              {barbeiros.map((barb) => (
-                <option key={barb.id} value={barb.id}>
-                  {barb.nome}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* 2. Barbeiro */}
+          {servicoSelecionado && (
+            <div>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
+                2. Escolha o Profissional
+              </label>
+              <select value={barbeiroSelecionado} onChange={(e) => { setBarbeiroSelecionado(e.target.value); setDataSelecionada(""); setHorarioEscolhido(""); }}
+                style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", boxSizing: "border-box" }}>
+                <option value="">Selecione um barbeiro...</option>
+                {barbeiros.map((b) => (
+                  <option key={b.id} value={b.id}>{b.nome}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
-          {/* Data e Horário */}
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px", textAlign: "center" }}>
-              Data e Horário:
-            </label>
-            <input
-              type="datetime-local"
-              value={dataHorario}
-              onChange={handleDataChange}
-              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: `1px solid ${erroHorario ? "#dc3545" : "#ccc"}`, fontSize: "14px", boxSizing: "border-box" }}
-            />
-            {erroHorario && (
-              <p style={{ color: "#dc3545", fontSize: "12px", marginTop: "6px", fontWeight: "600" }}>
-                ⚠️ {erroHorario}
-              </p>
-            )}
-            {/* Exibe os horários de funcionamento como dica */}
-            {horariosFuncionamento && (
-              <div style={{ marginTop: "10px", padding: "10px", backgroundColor: "#f8f9fa", borderRadius: "6px", fontSize: "12px", color: "#666" }}>
-                <strong>Horários de funcionamento:</strong>
-                {Object.entries(horariosFuncionamento).map(([dia, config]) => {
-                  const nomes = { domingo: "Dom", segunda: "Seg", terca: "Ter", quarta: "Qua", quinta: "Qui", sexta: "Sex", sabado: "Sáb" };
-                  return (
-                    <span key={dia} style={{ display: "inline-block", margin: "2px 6px" }}>
-                      <strong>{nomes[dia]}:</strong> {config.aberto ? `${config.abertura}–${config.fechamento}` : "Fechado"}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {/* 3. Data */}
+          {barbeiroSelecionado && (
+            <div>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
+                3. Escolha a Data
+              </label>
+              <input type="date" value={dataSelecionada} min={hoje}
+                onChange={(e) => { setDataSelecionada(e.target.value); setHorarioEscolhido(""); }}
+                style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", boxSizing: "border-box" }} />
+            </div>
+          )}
 
-          <button
-            type="submit"
-            disabled={enviando || !!erroHorario}
-            style={{ width: "100%", padding: "12px", backgroundColor: erroHorario ? "#ccc" : "#111", color: "#fff", border: "none", borderRadius: "6px", fontSize: "15px", fontWeight: "bold", cursor: erroHorario ? "not-allowed" : "pointer", marginTop: "10px" }}
-          >
+          {/* 4. Horários disponíveis */}
+          {dataSelecionada && (
+            <div>
+              <label style={{ display: "block", marginBottom: "12px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
+                4. Horários Disponíveis
+                {servicoAtual && <span style={{ fontWeight: "normal", color: "#999", marginLeft: "8px" }}>({servicoAtual.duracao} min cada)</span>}
+              </label>
+
+              {calculandoHorarios ? (
+                <p style={{ color: "#999", fontSize: "14px" }}>Verificando disponibilidade...</p>
+              ) : horariosDisponiveis.length === 0 ? (
+                <p style={{ color: "#dc3545", fontSize: "14px", padding: "12px", backgroundColor: "#fde8e8", borderRadius: "8px" }}>
+                  ❌ Nenhum horário disponível neste dia. Tente outra data.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                  {horariosDisponiveis.map((hora) => (
+                    <button key={hora} onClick={() => setHorarioEscolhido(hora)} type="button"
+                      style={{
+                        padding: "8px 16px", borderRadius: "6px", fontSize: "14px", fontWeight: "bold", cursor: "pointer",
+                        border: horarioEscolhido === hora ? "2px solid #111" : "2px solid #ddd",
+                        backgroundColor: horarioEscolhido === hora ? "#111" : "#fff",
+                        color: horarioEscolhido === hora ? "#fff" : "#333",
+                        transition: "all 0.15s",
+                      }}>
+                      {hora}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Resumo e confirmação */}
+          {horarioEscolhido && (
+            <div style={{ backgroundColor: "#f8f9fa", padding: "16px", borderRadius: "8px", border: "1px solid #eee" }}>
+              <p style={{ margin: "0 0 5px 0", fontSize: "13px", color: "#777", fontWeight: "600", textTransform: "uppercase" }}>Resumo do Agendamento</p>
+              <p style={{ margin: "4px 0", fontSize: "14px" }}>✂️ <strong>{servicoAtual?.nome}</strong></p>
+              <p style={{ margin: "4px 0", fontSize: "14px" }}>👤 <strong>{barbeiros.find((b) => b.id === barbeiroSelecionado)?.nome}</strong></p>
+              <p style={{ margin: "4px 0", fontSize: "14px" }}>📅 <strong>{dataSelecionada.split("-").reverse().join("/")} às {horarioEscolhido}</strong></p>
+              <p style={{ margin: "4px 0", fontSize: "14px" }}>💰 <strong>R$ {Number(servicoAtual?.preco).toFixed(2).replace(".", ",")}</strong></p>
+            </div>
+          )}
+
+          <button onClick={handleSalvarAgendamento} disabled={enviando || !horarioEscolhido}
+            style={{ width: "100%", padding: "13px", backgroundColor: horarioEscolhido ? "#111" : "#ccc", color: "#fff", border: "none", borderRadius: "6px", fontSize: "15px", fontWeight: "bold", cursor: horarioEscolhido ? "pointer" : "not-allowed", transition: "background-color 0.2s" }}>
             {enviando ? "Processando..." : "Confirmar Agendamento"}
           </button>
 
-        </form>
+        </div>
       </div>
     </div>
   );
