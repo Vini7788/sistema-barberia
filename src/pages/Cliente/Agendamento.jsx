@@ -5,7 +5,83 @@ import { useAuth } from "../../context/AuthContext.jsx";
 
 const DIAS_SEMANA = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
 
+// ── Estilos globais injetados uma vez ──────────────────
+const injectStyles = () => {
+  if (document.getElementById("agendamento-styles")) return;
+  const style = document.createElement("style");
+  style.id = "agendamento-styles";
+  style.textContent = `
+    .ag-slot {
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1.5px solid var(--grey-200, #d6d6d6);
+      background: var(--white, #fff);
+      color: var(--black, #111);
+      transition: all 0.15s ease;
+      font-family: 'DM Sans', sans-serif;
+      letter-spacing: 0.02em;
+    }
+    .ag-slot:hover {
+      border-color: var(--black, #111);
+      background: var(--grey-50, #f5f5f3);
+    }
+    .ag-slot.selected {
+      background: var(--black, #111);
+      color: #fff;
+      border-color: var(--black, #111);
+    }
+    .ag-card {
+      background: #fff;
+      border: 1.5px solid var(--grey-100, #ebebeb);
+      border-radius: 12px;
+      padding: 18px 20px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-align: left;
+      width: 100%;
+      font-family: 'DM Sans', sans-serif;
+    }
+    .ag-card:hover {
+      border-color: var(--black, #111);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    }
+    .ag-card.selected {
+      border-color: var(--black, #111);
+      background: var(--black, #111);
+      color: #fff;
+    }
+    .ag-input {
+      width: 100%;
+      padding: 13px 16px;
+      border: 1.5px solid var(--grey-200, #d6d6d6);
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: 'DM Sans', sans-serif;
+      background: #fff;
+      color: var(--black, #111);
+      outline: none;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .ag-input:focus { border-color: var(--black, #111); }
+    .ag-step { opacity: 0; transform: translateY(8px); animation: ag-fade-in 0.25s ease forwards; }
+    @keyframes ag-fade-in { to { opacity: 1; transform: translateY(0); } }
+    @media (max-width: 600px) {
+      .ag-outer { padding: 0 !important; }
+      .ag-inner { border-radius: 0 !important; min-height: 100vh !important; }
+    }
+  `;
+  document.head.appendChild(style);
+};
+
 export default function Agendamento() {
+  useEffect(() => { injectStyles(); }, []);
+
   const { usuarioLogado } = useAuth();
   const clientEmail = usuarioLogado?.email || "";
 
@@ -14,19 +90,18 @@ export default function Agendamento() {
   const [horariosFuncionamento, setHorariosFuncionamento] = useState(null);
   const [agendamentosExistentes, setAgendamentosExistentes] = useState([]);
 
-  // Seleções do cliente
   const [servicoSelecionado, setServicoSelecionado] = useState("");
   const [barbeiroSelecionado, setBarbeiroSelecionado] = useState("");
   const [dataSelecionada, setDataSelecionada] = useState("");
-
-  // Horários disponíveis calculados
   const [horariosDisponiveis, setHorariosDisponiveis] = useState([]);
   const [horarioEscolhido, setHorarioEscolhido] = useState("");
 
   const [carregando, setCarregando] = useState(true);
   const [calculandoHorarios, setCalculandoHorarios] = useState(false);
   const [enviando, setEnviando] = useState(false);
+  const [sucesso, setSucesso] = useState(false);
 
+  // ── Backend inalterado ─────────────────────────────────
   useEffect(() => {
     const carregar = async () => {
       try {
@@ -56,7 +131,6 @@ export default function Agendamento() {
     carregar();
   }, []);
 
-  // Recalcula horários disponíveis sempre que barbeiro, serviço ou data mudar
   useEffect(() => {
     if (!barbeiroSelecionado || !servicoSelecionado || !dataSelecionada) {
       setHorariosDisponiveis([]);
@@ -69,32 +143,22 @@ export default function Agendamento() {
   const calcularHorariosDisponiveis = () => {
     setCalculandoHorarios(true);
     setHorarioEscolhido("");
-
     const servico = servicos.find((s) => s.id === servicoSelecionado);
     if (!servico || !servico.duracao) { setHorariosDisponiveis([]); setCalculandoHorarios(false); return; }
-
     const duracaoMin = Number(servico.duracao);
     const dataObj = new Date(dataSelecionada + "T00:00:00");
     const diaSemana = DIAS_SEMANA[dataObj.getDay()];
     const configDia = horariosFuncionamento?.[diaSemana];
-
-    // Dia fechado
     if (!configDia || !configDia.aberto) { setHorariosDisponiveis([]); setCalculandoHorarios(false); return; }
-
     const [hAbre, mAbre] = configDia.abertura.split(":").map(Number);
     const [hFecha, mFecha] = configDia.fechamento.split(":").map(Number);
-    const minutosAbertura  = hAbre * 60 + mAbre;
+    const minutosAbertura = hAbre * 60 + mAbre;
     const minutosFechamento = hFecha * 60 + mFecha;
-
-    // Busca agendamentos do barbeiro nesse dia e calcula blocos ocupados
     const agendamentosDoDia = agendamentosExistentes.filter((ag) => {
       if (ag.barbeiroId !== barbeiroSelecionado) return false;
       if (!ag.dataHorario) return false;
-      const dataAg = ag.dataHorario.split("T")[0];
-      return dataAg === dataSelecionada && ag.status !== "cancelado";
+      return ag.dataHorario.split("T")[0] === dataSelecionada && ag.status !== "cancelado";
     });
-
-    // Para cada agendamento existente, calcula o intervalo bloqueado
     const blocos = agendamentosDoDia.map((ag) => {
       const horaStr = ag.dataHorario.split("T")[1]?.substring(0, 5) || "00:00";
       const [h, m] = horaStr.split(":").map(Number);
@@ -103,54 +167,36 @@ export default function Agendamento() {
       const duracaoAg = servicoDoAg?.duracao ? Number(servicoDoAg.duracao) : 30;
       return { inicio, fim: inicio + duracaoAg };
     });
-
-    // Gera slots de 30 em 30 minutos dentro do horário de funcionamento
     const slots = [];
     const hoje = new Date();
     const ehHoje = dataSelecionada === hoje.toISOString().split("T")[0];
     const minutosAgora = hoje.getHours() * 60 + hoje.getMinutes();
-
     for (let min = minutosAbertura; min + duracaoMin <= minutosFechamento; min += 30) {
-      // Se for hoje, não mostrar horários que já passaram
       if (ehHoje && min <= minutosAgora) continue;
-
       const fimSlot = min + duracaoMin;
-
-      // Verifica se o slot conflita com algum agendamento existente
-      const conflito = blocos.some((b) => min < b.fim && fimSlot > b.inicio);
-      if (conflito) continue;
-
+      if (blocos.some((b) => min < b.fim && fimSlot > b.inicio)) continue;
       const hh = String(Math.floor(min / 60)).padStart(2, "0");
       const mm = String(min % 60).padStart(2, "0");
       slots.push(`${hh}:${mm}`);
     }
-
     setHorariosDisponiveis(slots);
     setCalculandoHorarios(false);
   };
 
   const handleSalvarAgendamento = async () => {
-    if (!barbeiroSelecionado || !servicoSelecionado || !dataSelecionada || !horarioEscolhido) {
-      alert("Selecione todos os campos antes de confirmar!");
-      return;
-    }
+    if (!barbeiroSelecionado || !servicoSelecionado || !dataSelecionada || !horarioEscolhido) return;
     try {
       setEnviando(true);
       const dataHorario = `${dataSelecionada}T${horarioEscolhido}`;
-      const novoAgendamento = {
-        clientEmail,
-        barbeiroId: barbeiroSelecionado,
-        servicoId: servicoSelecionado,
-        dataHorario,
-        status: "confirmado",
-        criadoEm: new Date().toISOString(),
-      };
+      const novoAgendamento = { clientEmail, barbeiroId: barbeiroSelecionado, servicoId: servicoSelecionado, dataHorario, status: "confirmado", criadoEm: new Date().toISOString() };
       const ref = await addDoc(collection(db, "agendamentos"), novoAgendamento);
-      // Atualiza lista local para bloquear o horário imediatamente
       setAgendamentosExistentes((p) => [...p, { id: ref.id, ...novoAgendamento }]);
-      alert("🎉 Agendamento realizado com sucesso!");
-      setServicoSelecionado(""); setBarbeiroSelecionado(""); setDataSelecionada("");
-      setHorarioEscolhido(""); setHorariosDisponiveis([]);
+      setSucesso(true);
+      setTimeout(() => {
+        setSucesso(false);
+        setServicoSelecionado(""); setBarbeiroSelecionado(""); setDataSelecionada("");
+        setHorarioEscolhido(""); setHorariosDisponiveis([]);
+      }, 3000);
     } catch (err) {
       console.error(err);
       alert("Erro ao salvar agendamento.");
@@ -160,98 +206,137 @@ export default function Agendamento() {
   };
 
   const servicoAtual = servicos.find((s) => s.id === servicoSelecionado);
-
-  // Data mínima = hoje
+  const barbeiroAtual = barbeiros.find((b) => b.id === barbeiroSelecionado);
   const hoje = new Date().toISOString().split("T")[0];
 
+  // ── Indicador de progresso ────────────────────────────
+  const etapa = !servicoSelecionado ? 1 : !barbeiroSelecionado ? 2 : !dataSelecionada ? 3 : !horarioEscolhido ? 4 : 5;
+
   if (carregando) return (
-    <div style={{ textAlign: "center", marginTop: "100px", fontFamily: "sans-serif" }}>
-      <h3>Carregando...</h3>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "var(--grey-50, #f5f5f3)" }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: "32px", marginBottom: "16px", opacity: 0.3 }}>✂</div>
+        <p style={{ color: "var(--grey-400, #9a9a9a)", fontSize: "15px", fontFamily: "'DM Sans', sans-serif" }}>Carregando...</p>
+      </div>
+    </div>
+  );
+
+  if (sucesso) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "var(--grey-50, #f5f5f3)", padding: "20px" }}>
+      <div style={{ textAlign: "center", maxWidth: "380px" }}>
+        <div style={{ width: "72px", height: "72px", borderRadius: "50%", backgroundColor: "#d8f3dc", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 24px", fontSize: "32px" }}>✓</div>
+        <h2 style={{ fontSize: "26px", fontWeight: "700", color: "var(--black, #111)", marginBottom: "12px", letterSpacing: "-0.02em", fontFamily: "'DM Sans', sans-serif" }}>Agendado!</h2>
+        <p style={{ color: "var(--grey-400, #9a9a9a)", fontSize: "15px", lineHeight: "1.6", fontFamily: "'DM Sans', sans-serif" }}>
+          Seu horário com <strong style={{ color: "var(--black, #111)" }}>{barbeiroAtual?.nome}</strong> às <strong style={{ color: "var(--black, #111)" }}>{horarioEscolhido}</strong> foi confirmado.
+        </p>
+      </div>
     </div>
   );
 
   return (
-    <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-start", minHeight: "80vh", backgroundColor: "#f8f9fa", fontFamily: "sans-serif", padding: "40px 20px" }}>
-      <div style={{ backgroundColor: "#fff", padding: "40px", borderRadius: "10px", boxShadow: "0 4px 15px rgba(0,0,0,0.05)", width: "100%", maxWidth: "500px" }}>
+    <div className="ag-outer" style={{ minHeight: "100vh", backgroundColor: "var(--grey-50, #f5f5f3)", padding: "40px 20px", display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
+      <div className="ag-inner" style={{ width: "100%", maxWidth: "520px", backgroundColor: "#fff", borderRadius: "20px", overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.08)" }}>
 
-        <h2 style={{ textAlign: "center", marginBottom: "8px", color: "#111", fontSize: "24px", fontWeight: "bold" }}>
-          Agende seu Horário
-        </h2>
-        <p style={{ textAlign: "center", color: "#888", fontSize: "13px", marginBottom: "30px" }}>
-          Olá, <strong>{clientEmail}</strong>
-        </p>
+        {/* Header */}
+        <div style={{ backgroundColor: "var(--black, #111)", padding: "32px 32px 28px" }}>
+          <p style={{ color: "rgba(255,255,255,0.45)", fontSize: "12px", fontWeight: "500", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "8px", fontFamily: "'DM Sans', sans-serif" }}>
+            LEME BARBER
+          </p>
+          <h1 style={{ color: "#fff", fontSize: "26px", fontWeight: "700", letterSpacing: "-0.02em", marginBottom: "20px", fontFamily: "'DM Sans', sans-serif" }}>
+            Novo Agendamento
+          </h1>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {/* Barra de progresso */}
+          <div style={{ display: "flex", gap: "6px" }}>
+            {[1,2,3,4].map((n) => (
+              <div key={n} style={{ flex: 1, height: "3px", borderRadius: "999px", backgroundColor: etapa > n ? "#fff" : etapa === n ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.15)", transition: "background-color 0.3s" }} />
+            ))}
+          </div>
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", marginTop: "8px", fontFamily: "'DM Sans', sans-serif" }}>
+            Passo {Math.min(etapa, 4)} de 4
+          </p>
+        </div>
 
-          {/* 1. Serviço */}
-          <div>
-            <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
-              1. Escolha o Serviço
+        {/* Corpo */}
+        <div style={{ padding: "32px" }}>
+
+          {/* ETAPA 1 — Serviço */}
+          <div className="ag-step" style={{ marginBottom: "28px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "var(--grey-400, #9a9a9a)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "14px", fontFamily: "'DM Sans', sans-serif" }}>
+              01 — Serviço
             </label>
-            <select value={servicoSelecionado} onChange={(e) => { setServicoSelecionado(e.target.value); setBarbeiroSelecionado(""); setDataSelecionada(""); setHorarioEscolhido(""); }}
-              style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", boxSizing: "border-box" }}>
-              <option value="">Selecione um serviço...</option>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               {servicos.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.nome} — R$ {Number(s.preco).toFixed(2).replace(".", ",")} ({s.duracao} min)
-                </option>
+                <button key={s.id} type="button"
+                  className={`ag-card ${servicoSelecionado === s.id ? "selected" : ""}`}
+                  onClick={() => { setServicoSelecionado(s.id); setBarbeiroSelecionado(""); setDataSelecionada(""); setHorarioEscolhido(""); }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <p style={{ fontWeight: "600", fontSize: "15px", margin: "0 0 3px 0" }}>{s.nome}</p>
+                      <p style={{ fontSize: "13px", opacity: 0.6, margin: 0 }}>{s.duracao} min</p>
+                    </div>
+                    <span style={{ fontWeight: "700", fontSize: "16px" }}>
+                      R$ {Number(s.preco).toFixed(2).replace(".", ",")}
+                    </span>
+                  </div>
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
-          {/* 2. Barbeiro */}
+          {/* ETAPA 2 — Barbeiro */}
           {servicoSelecionado && (
-            <div>
-              <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
-                2. Escolha o Profissional
+            <div className="ag-step" style={{ marginBottom: "28px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "var(--grey-400, #9a9a9a)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "14px", fontFamily: "'DM Sans', sans-serif" }}>
+                02 — Profissional
               </label>
-              <select value={barbeiroSelecionado} onChange={(e) => { setBarbeiroSelecionado(e.target.value); setDataSelecionada(""); setHorarioEscolhido(""); }}
-                style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", backgroundColor: "#fff", boxSizing: "border-box" }}>
-                <option value="">Selecione um barbeiro...</option>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "10px" }}>
                 {barbeiros.map((b) => (
-                  <option key={b.id} value={b.id}>{b.nome}</option>
+                  <button key={b.id} type="button"
+                    className={`ag-card ${barbeiroSelecionado === b.id ? "selected" : ""}`}
+                    onClick={() => { setBarbeiroSelecionado(b.id); setDataSelecionada(""); setHorarioEscolhido(""); }}
+                    style={{ textAlign: "center", padding: "20px 12px" }}>
+                    {/* Foto do barbeiro — substitua pelo src real */}
+                    {<img src={`/img/barbeiros/${b.id}.png`} style={{width:48,height:48,borderRadius:"50%",objectFit:"cover",marginBottom:10}} />}
+                    <p style={{ fontWeight: "600", fontSize: "14px", margin: 0 }}>{b.nome}</p>
+                  </button>
                 ))}
-              </select>
+              </div>
             </div>
           )}
 
-          {/* 3. Data */}
+          {/* ETAPA 3 — Data */}
           {barbeiroSelecionado && (
-            <div>
-              <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
-                3. Escolha a Data
+            <div className="ag-step" style={{ marginBottom: "28px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "var(--grey-400, #9a9a9a)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "14px", fontFamily: "'DM Sans', sans-serif" }}>
+                03 — Data
               </label>
-              <input type="date" value={dataSelecionada} min={hoje}
-                onChange={(e) => { setDataSelecionada(e.target.value); setHorarioEscolhido(""); }}
-                style={{ width: "100%", padding: "10px 12px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", boxSizing: "border-box" }} />
+              <input type="date" className="ag-input" value={dataSelecionada} min={hoje}
+                onChange={(e) => { setDataSelecionada(e.target.value); setHorarioEscolhido(""); }} />
             </div>
           )}
 
-          {/* 4. Horários disponíveis */}
+          {/* ETAPA 4 — Horários */}
           {dataSelecionada && (
-            <div>
-              <label style={{ display: "block", marginBottom: "12px", fontWeight: "600", color: "#555", fontSize: "14px" }}>
-                4. Horários Disponíveis
-                {servicoAtual && <span style={{ fontWeight: "normal", color: "#999", marginLeft: "8px" }}>({servicoAtual.duracao} min cada)</span>}
+            <div className="ag-step" style={{ marginBottom: "28px" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: "700", color: "var(--grey-400, #9a9a9a)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "14px", fontFamily: "'DM Sans', sans-serif" }}>
+                04 — Horário {servicoAtual && <span style={{ fontWeight: "400", textTransform: "none", letterSpacing: 0 }}>· {servicoAtual.duracao} min</span>}
               </label>
 
               {calculandoHorarios ? (
-                <p style={{ color: "#999", fontSize: "14px" }}>Verificando disponibilidade...</p>
+                <p style={{ color: "var(--grey-400, #9a9a9a)", fontSize: "14px", fontFamily: "'DM Sans', sans-serif" }}>Verificando disponibilidade...</p>
               ) : horariosDisponiveis.length === 0 ? (
-                <p style={{ color: "#dc3545", fontSize: "14px", padding: "12px", backgroundColor: "#fde8e8", borderRadius: "8px" }}>
-                  ❌ Nenhum horário disponível neste dia. Tente outra data.
-                </p>
+                <div style={{ padding: "16px 20px", backgroundColor: "var(--grey-50, #f5f5f3)", borderRadius: "10px", border: "1.5px solid var(--grey-100, #ebebeb)" }}>
+                  <p style={{ color: "var(--grey-600, #555)", fontSize: "14px", margin: 0, fontFamily: "'DM Sans', sans-serif" }}>
+                    Sem horários disponíveis neste dia. Tente outra data.
+                  </p>
+                </div>
               ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                   {horariosDisponiveis.map((hora) => (
-                    <button key={hora} onClick={() => setHorarioEscolhido(hora)} type="button"
-                      style={{
-                        padding: "8px 16px", borderRadius: "6px", fontSize: "14px", fontWeight: "bold", cursor: "pointer",
-                        border: horarioEscolhido === hora ? "2px solid #111" : "2px solid #ddd",
-                        backgroundColor: horarioEscolhido === hora ? "#111" : "#fff",
-                        color: horarioEscolhido === hora ? "#fff" : "#333",
-                        transition: "all 0.15s",
-                      }}>
+                    <button key={hora} type="button"
+                      className={`ag-slot ${horarioEscolhido === hora ? "selected" : ""}`}
+                      onClick={() => setHorarioEscolhido(hora)}>
                       {hora}
                     </button>
                   ))}
@@ -260,20 +345,44 @@ export default function Agendamento() {
             </div>
           )}
 
-          {/* Resumo e confirmação */}
+          {/* Resumo */}
           {horarioEscolhido && (
-            <div style={{ backgroundColor: "#f8f9fa", padding: "16px", borderRadius: "8px", border: "1px solid #eee" }}>
-              <p style={{ margin: "0 0 5px 0", fontSize: "13px", color: "#777", fontWeight: "600", textTransform: "uppercase" }}>Resumo do Agendamento</p>
-              <p style={{ margin: "4px 0", fontSize: "14px" }}>✂️ <strong>{servicoAtual?.nome}</strong></p>
-              <p style={{ margin: "4px 0", fontSize: "14px" }}>👤 <strong>{barbeiros.find((b) => b.id === barbeiroSelecionado)?.nome}</strong></p>
-              <p style={{ margin: "4px 0", fontSize: "14px" }}>📅 <strong>{dataSelecionada.split("-").reverse().join("/")} às {horarioEscolhido}</strong></p>
-              <p style={{ margin: "4px 0", fontSize: "14px" }}>💰 <strong>R$ {Number(servicoAtual?.preco).toFixed(2).replace(".", ",")}</strong></p>
+            <div className="ag-step" style={{ backgroundColor: "var(--grey-50, #f5f5f3)", borderRadius: "12px", padding: "20px", marginBottom: "24px", border: "1.5px solid var(--grey-100, #ebebeb)" }}>
+              <p style={{ fontSize: "11px", fontWeight: "700", color: "var(--grey-400, #9a9a9a)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "14px", fontFamily: "'DM Sans', sans-serif" }}>
+                Resumo
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                {[
+                  { label: "Serviço", valor: servicoAtual?.nome },
+                  { label: "Profissional", valor: barbeiroAtual?.nome },
+                  { label: "Data", valor: dataSelecionada.split("-").reverse().join("/") },
+                  { label: "Horário", valor: horarioEscolhido },
+                  { label: "Valor", valor: `R$ ${Number(servicoAtual?.preco).toFixed(2).replace(".", ",")}` },
+                ].map(({ label, valor }) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "13px", color: "var(--grey-400, #9a9a9a)", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
+                    <span style={{ fontSize: "14px", fontWeight: "600", color: "var(--black, #111)", fontFamily: "'DM Sans', sans-serif" }}>{valor}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
-          <button onClick={handleSalvarAgendamento} disabled={enviando || !horarioEscolhido}
-            style={{ width: "100%", padding: "13px", backgroundColor: horarioEscolhido ? "#111" : "#ccc", color: "#fff", border: "none", borderRadius: "6px", fontSize: "15px", fontWeight: "bold", cursor: horarioEscolhido ? "pointer" : "not-allowed", transition: "background-color 0.2s" }}>
-            {enviando ? "Processando..." : "Confirmar Agendamento"}
+          {/* Botão confirmar */}
+          <button onClick={handleSalvarAgendamento}
+            disabled={enviando || !horarioEscolhido}
+            style={{
+              width: "100%", padding: "15px",
+              backgroundColor: horarioEscolhido ? "var(--black, #111)" : "var(--grey-200, #d6d6d6)",
+              color: horarioEscolhido ? "#fff" : "var(--grey-400, #9a9a9a)",
+              border: "none", borderRadius: "10px",
+              fontSize: "15px", fontWeight: "600",
+              cursor: horarioEscolhido ? "pointer" : "not-allowed",
+              transition: "all 0.2s",
+              letterSpacing: "0.02em",
+              fontFamily: "'DM Sans', sans-serif",
+            }}>
+            {enviando ? "Confirmando..." : "Confirmar Agendamento"}
           </button>
 
         </div>
